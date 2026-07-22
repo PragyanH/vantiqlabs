@@ -1,0 +1,4 @@
+'use client'
+// Client component: responsive navigation.
+import Link from 'next/link';import {usePathname} from 'next/navigation';import {useState} from 'react'
+export default function Topbar(){const [open,setOpen]=useState(false),path=usePathname();const links=[['Find mentors','/browse'],['How it works','/how-it-works'],['Pricing','/browse'],['Resources','/browse']] as const;return <header className="topbar"><Link className="brand" href="/"><b>✦</b> VantiqLabs</Link><nav className={open?'open':''}>{links.map(([n,h])=><Link key={n} className={path===h?'active':''} href={h} onClick={()=>setOpen(false)}>{n}</Link>)}<Link className="login" href="/auth/signin">Sign in</Link><Link className="signup-nav" href="/auth/signup">Sign up</Link><Link className="btn small-btn" href="/browse">Get started</Link></nav><button className="menu" onClick={()=>setOpen(!open)}>☰</button></header>}

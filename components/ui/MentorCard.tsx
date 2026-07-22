@@ -1,0 +1,4 @@
+'use client'
+// Client component: mentor card with optional saved state.
+import Link from 'next/link';import Avatar from './Avatar';import {type Mentor} from '@/lib/types'
+export default function MentorCard({mentor,href,save,toggle}:{mentor:Mentor;href:string;save?:boolean;toggle?:()=>void}){return <article className="mentor-card"><div className="card-top"><Avatar mentor={mentor}/>{toggle&&<button className={'save '+(save?'on':'')} onClick={toggle}>♥</button>}</div><Link className="card-body" href={href}><div className="verified">✓ VERIFIED MENTOR</div><h3>{mentor.name}</h3><p>{mentor.role} · <b>{mentor.company}</b></p><span className="college-pill">{mentor.college}</span><div className="tags">{mentor.expertise.map(x=><span key={x}>{x}</span>)}</div><div className="card-bottom"><span>★ {mentor.rating} · {mentor.years}</span><b>View profile →</b></div></Link></article>}

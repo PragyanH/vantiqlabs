@@ -1,0 +1,3 @@
+// Server component: mentor profile route.
+import Link from 'next/link';import {mentors} from '@/lib/types';import ProfileHero from '@/components/profile/ProfileHero';import ProfileTabs from '@/components/profile/ProfileTabs';import BookCard from '@/components/profile/BookCard'
+export default function ProfilePage({params}:{params:{id:string}}){const mentor=mentors.find(x=>x.id===Number(params.id));if(!mentor)return <main className="profile"><h1>Profile not found</h1></main>;return <main className="profile"><Link className="back" href="/browse">← Back to mentors</Link><ProfileHero mentor={mentor}/><div className="profile-layout"><ProfileTabs mentor={mentor}/><BookCard mentor={mentor}/></div></main>}
