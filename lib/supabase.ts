@@ -4,3 +4,5 @@ const supabaseUrl=configuredSupabaseUrl?.startsWith('http')?configuredSupabaseUr
 const supabaseAnonKey=process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY||'placeholder-anon-key'
 export const supabase=createClient(supabaseUrl,supabaseAnonKey)
 export function createServerSupabaseClient(){return createClient(supabaseUrl,process.env.SUPABASE_SERVICE_ROLE_KEY||'placeholder-service-role-key')}
+// Public server-rendered reads use the anon key so RLS remains the source of truth.
+export function createPublicServerSupabaseClient(){return createClient(supabaseUrl,supabaseAnonKey)}
