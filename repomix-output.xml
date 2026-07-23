@@ -102,6 +102,7 @@ components/
     ComingSoon.tsx
     MentorCard.tsx
 lib/
+  auth.ts
   supabase.ts
   types.ts
 public/
@@ -115,22 +116,58 @@ public/
     mentor-manager.png
     mentor-product.png
     mentor-security.png
-src/
-  data.ts
 styles/
   globals.css
+supabase/
+  migrations/
+    001_init.sql
+  seed.sql
 .env.local.example
 .gitignore
-index.html
 next-env.d.ts
 next.config.mjs
 package.json
 tsconfig.json
-tsconfig.node.json
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="lib/auth.ts">
+import { supabase } from '@/lib/supabase'
+export async function getCurrentUser(){const {data,error}=await supabase.auth.getUser();if(error){console.error('Unable to get the current user:',error.message);return null}return data.user}
+</file>
+
+<file path="supabase/migrations/001_init.sql">
+create extension if not exists pgcrypto;
+
+create table colleges (id uuid primary key default gen_random_uuid(), name text not null, slug text not null unique, logo_url text, endorsement_status text default 'pending', created_at timestamptz default now());
+create table alumni_profiles (id uuid primary key default gen_random_uuid(), college_id uuid references colleges(id), name text, initials text, photo_url text, company text, role text, years_experience text, expertise text[], rate_call_10min int, rate_call_30min int, rate_full_unlock int, linkedin_url text, prep_timeline_text text, resources_used_text text, interview_questions_text text, applications_count int, rejections_count int, reflection_text text, free_summary_text text, full_roadmap_text text, rating numeric default 4.8, is_verified boolean default false, is_published boolean default false, created_at timestamptz default now());
+create table students (id uuid primary key default gen_random_uuid(), auth_user_id uuid references auth.users(id), full_name text, college_id uuid references colleges(id), target_company text, target_role text, created_at timestamptz default now());
+create table unlocks (id uuid primary key default gen_random_uuid(), student_id uuid references students(id), alumni_profile_id uuid references alumni_profiles(id), amount_paid int, razorpay_payment_id text, unlocked_at timestamptz default now());
+create table call_bookings (id uuid primary key default gen_random_uuid(), student_id uuid references students(id), alumni_profile_id uuid references alumni_profiles(id), slot_time timestamptz, duration_min int, status text default 'pending', razorpay_payment_id text, meeting_link text, amount_paid int, created_at timestamptz default now());
+create table availability_slots (id uuid primary key default gen_random_uuid(), alumni_profile_id uuid references alumni_profiles(id), slot_time timestamptz, is_booked boolean default false);
+
+alter table alumni_profiles enable row level security; alter table students enable row level security; alter table unlocks enable row level security; alter table call_bookings enable row level security;
+create policy "Published alumni are publicly visible" on alumni_profiles for select using (is_published = true);
+create policy "Students read own row" on students for select using (auth_user_id = auth.uid());
+create policy "Students update own row" on students for update using (auth_user_id = auth.uid()) with check (auth_user_id = auth.uid());
+create policy "Students read own unlocks" on unlocks for select using (student_id in (select id from students where auth_user_id = auth.uid()));
+create policy "Students read own bookings" on call_bookings for select using (student_id in (select id from students where auth_user_id = auth.uid()));
+</file>
+
+<file path="supabase/seed.sql">
+insert into colleges (name, slug, endorsement_status) values ('BMSIT&M','bmsitm','approved'), ('MSRIT','msrit','approved') on conflict (slug) do nothing;
+insert into alumni_profiles (college_id,name,initials,company,role,years_experience,expertise,rate_call_10min,rate_call_30min,rate_full_unlock,rating,is_verified,is_published,free_summary_text,full_roadmap_text)
+select c.id, v.name,v.initials,v.company,v.role,v.years,v.expertise,v.rate10,v.rate30,249,v.rating,true,true,v.summary,v.roadmap from (values
+('BMSIT&M','Aarav Mehta','AM','Google','Senior Software Engineer','7 years',array['Product engineering','System design'],599,999,4.9,'A practical overview of growing into a senior engineering role at Google, with an emphasis on product impact and clear technical communication.','A focused roadmap for strengthening product engineering fundamentals, system design judgment, and interview readiness for large technology companies.'),
+('MSRIT','Nisha Rao','NR','Microsoft','Product Manager','6 years',array['Product strategy','Career switch'],539,899,4.9,'A guide to product thinking at Microsoft, connecting customer problems, strategy, and a credible path into product management.','A step-by-step product career roadmap covering structured problem solving, portfolio stories, and preparation for product interviews.'),
+('BMSIT&M','Karthik Iyer','KI','Amazon','SDE II','5 years',array['Interview prep','DSA'],479,799,4.8,'An honest account of building software engineering depth at Amazon through deliberate interview preparation and execution.','A practical plan for DSA fluency, system design basics, project storytelling, and consistent applications.'),
+('MSRIT','Ananya Sharma','AS','Atlassian','Data Scientist','5 years',array['Data science','Portfolios'],539,899,5.0,'An approachable view of data science at Atlassian, including how strong portfolios show both analytical rigor and product context.','A roadmap for selecting data projects, communicating insights, and preparing for data science interviews.'),
+('BMSIT&M','Rohan Desai','RD','Razorpay','UX Designer','4 years',array['Design careers','Portfolio review'],419,699,4.8,'A portfolio-led introduction to UX design at Razorpay, balancing visual craft, user research, and business constraints.','A clear plan for producing case studies, seeking feedback, and presenting a design portfolio with confidence.'),
+('MSRIT','Meera Nair','MN','Flipkart','Engineering Manager','9 years',array['Leadership','Backend'],719,1199,4.9,'A perspective on backend engineering and leadership at Flipkart, including the habits that compound as responsibility grows.','A progression plan for backend foundations, system ownership, communication, and emerging technical leadership.')
+) as v(college_name,name,initials,company,role,years,expertise,rate10,rate30,rating,summary,roadmap) join colleges c on c.name=v.college_name;
+</file>
 
 <file path="app/api/book/route.ts">
 import {NextResponse} from 'next/server'
@@ -155,23 +192,18 @@ import AuthCard from '@/components/auth/AuthCard';export default function Signup
 </file>
 
 <file path="app/booking/[id]/page.tsx">
-'use client'
-// Client component: booking route.
-import {mentors} from '@/lib/types';import BookingFlow from '@/components/booking/BookingFlow'
-export default function BookingPage({params}:{params:{id:string}}){const mentor=mentors.find(x=>x.id===Number(params.id));return mentor?<BookingFlow mentor={mentor}/>:<main className="booking"><h1>Mentor not found</h1></main>}
+import BookingFlow from '@/components/booking/BookingFlow';import {createServerSupabaseClient} from '@/lib/supabase';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default async function BookingPage({params}:{params:{id:string}}){const {data,error}=await createServerSupabaseClient().from('alumni_profiles').select('*, colleges(name, slug)').eq('id',params.id).eq('is_published',true).maybeSingle();if(error)console.error('Unable to load booking mentor:',error.message);return data?<BookingFlow mentor={data as AlumniProfileWithCollege}/>:<main className="booking"><h1>{error?'We couldn’t load this mentor. Please try again.':'Mentor not found'}</h1></main>}
 </file>
 
 <file path="app/browse/page.tsx">
-'use client'
-// Client component: browse route, query-aware.
-import {Suspense} from 'react';import {useSearchParams} from 'next/navigation';import FilterPanel from '@/components/browse/FilterPanel';import BrowseContent from '@/components/browse/BrowseContent'
-function Browse(){const p=useSearchParams(),college=p.get('college')||'All colleges';return <main className="app-shell"><FilterPanel selectedCollege={college}/><BrowseContent college={college}/></main>};export default function BrowsePage(){return <Suspense><Browse/></Suspense>}
+import FilterPanel from '@/components/browse/FilterPanel';import BrowseContent from '@/components/browse/BrowseContent';import {createServerSupabaseClient} from '@/lib/supabase';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default async function BrowsePage({searchParams}:{searchParams:{college?:string}}){const supabase=createServerSupabaseClient();const {data,error}=await supabase.from('alumni_profiles').select('*, colleges(name, slug)').eq('is_published',true);if(error){console.error('Unable to load mentors:',error.message);return <main className="app-shell"><FilterPanel selectedCollege={searchParams.college||'All colleges'}/><section className="browse-content"><div className="empty"><b>We couldn’t load mentors right now. Please try again shortly.</b></div></section></main>}return <main className="app-shell"><FilterPanel selectedCollege={searchParams.college||'All colleges'}/><BrowseContent college={searchParams.college||'All colleges'} mentors={(data||[]) as AlumniProfileWithCollege[]}/></main>}
 </file>
 
 <file path="app/dashboard/page.tsx">
-'use client'
-// Client component: dashboard route.
-import DashSidebar from '@/components/dashboard/DashSidebar';import DashMain from '@/components/dashboard/DashMain';export default function DashboardPage(){return <main className="dashboard"><DashSidebar/><DashMain/></main>}
+'use client';import {useEffect,useState} from 'react';import {useRouter} from 'next/navigation';import DashSidebar from '@/components/dashboard/DashSidebar';import DashMain from '@/components/dashboard/DashMain';import {getCurrentUser} from '@/lib/auth';import {supabase} from '@/lib/supabase';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default function DashboardPage(){const r=useRouter(),[name,setName]=useState(''),[mentors,setMentors]=useState<AlumniProfileWithCollege[]>([]),[error,setError]=useState('');useEffect(()=>{const load=async()=>{const user=await getCurrentUser();if(!user){r.replace('/auth/signin');return}const [{data:student,error:studentError},{data:profiles,error:profilesError}]=await Promise.all([supabase.from('students').select('full_name').eq('auth_user_id',user.id).maybeSingle(),supabase.from('alumni_profiles').select('*, colleges(name, slug)').eq('is_published',true).limit(3)]);if(studentError||profilesError){console.error('Unable to load dashboard:',studentError?.message||profilesError?.message);setError('We couldn’t load all dashboard details right now.')}setName(student?.full_name||user.email?.split('@')[0]||'there');setMentors((profiles||[]) as AlumniProfileWithCollege[])};load()},[r]);if(!name&&!error)return <main className="dashboard"><div className="empty"><b>Loading your dashboard…</b></div></main>;return <main className="dashboard"><DashSidebar/><DashMain name={name||'there'} mentors={mentors} error={error}/></main>}
 </file>
 
 <file path="app/how-it-works/page.tsx">
@@ -182,9 +214,8 @@ export default function HowItWorks(){const [started,setStarted]=useState(false),
 </file>
 
 <file path="app/profile/[id]/page.tsx">
-// Server component: mentor profile route.
-import Link from 'next/link';import {mentors} from '@/lib/types';import ProfileHero from '@/components/profile/ProfileHero';import ProfileTabs from '@/components/profile/ProfileTabs';import BookCard from '@/components/profile/BookCard'
-export default function ProfilePage({params}:{params:{id:string}}){const mentor=mentors.find(x=>x.id===Number(params.id));if(!mentor)return <main className="profile"><h1>Profile not found</h1></main>;return <main className="profile"><Link className="back" href="/browse">← Back to mentors</Link><ProfileHero mentor={mentor}/><div className="profile-layout"><ProfileTabs mentor={mentor}/><BookCard mentor={mentor}/></div></main>}
+import Link from 'next/link';import ProfileHero from '@/components/profile/ProfileHero';import ProfileTabs from '@/components/profile/ProfileTabs';import BookCard from '@/components/profile/BookCard';import {createServerSupabaseClient} from '@/lib/supabase';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default async function ProfilePage({params}:{params:{id:string}}){const {data,error}=await createServerSupabaseClient().from('alumni_profiles').select('*, colleges(name, slug)').eq('id',params.id).eq('is_published',true).maybeSingle();if(error){console.error('Unable to load profile:',error.message)}const mentor=data as AlumniProfileWithCollege|null;if(error||!mentor)return <main className="profile"><h1>Profile not found</h1></main>;return <main className="profile"><Link className="back" href="/browse">← Back to mentors</Link><ProfileHero mentor={mentor}/><div className="profile-layout"><ProfileTabs mentor={mentor}/><BookCard mentor={mentor}/></div></main>}
 </file>
 
 <file path="app/layout.tsx">
@@ -205,23 +236,18 @@ export default function HomePage(){return <main className="editorial-home"><Hero
 
 <file path="components/auth/AuthCard.tsx">
 'use client'
-// Client component: auth form and appearance toggle.
-import Link from 'next/link';import {useRouter} from 'next/navigation';import {useState} from 'react'
-export default function AuthCard({mode}:{mode:'signin'|'signup'}){const r=useRouter(),[theme,setTheme]=useState<'light'|'dark'>('dark'),signup=mode==='signup';return <main className={'auth-page '+theme}><button className="auth-back" onClick={()=>r.back()}>←</button><div className="auth-brand">✦ VantiqLabs</div><button className="theme-toggle" onClick={()=>setTheme(theme==='dark'?'light':'dark')}>{theme==='dark'?'☀':'☾'}<span>{theme==='dark'?'Light':'Dark'} mode</span></button><section className="auth-card"><div className="auth-kicker">{signup?'START YOUR VANTIQ JOURNEY':'WELCOME BACK'}</div><h1>{signup?'Create your account':'Sign in to VantiqLabs'}</h1><p>{signup?'Already have an account?':'New to VantiqLabs?'} <Link href={signup?'/auth/signin':'/auth/signup'}>{signup?'Sign in':'Create an account'}</Link></p><form>{signup&&<label>Full name<input placeholder="Enter your full name"/></label>}<label>College email<input type="email" placeholder="you@college.edu"/></label><label>Password<input type="password" placeholder="Enter your password"/></label><button className="auth-submit" type="button">{signup?'Create your account':'Sign in to your account'} →</button></form><div className="auth-divider"><span>OR CONTINUE WITH</span></div><button className="social-auth"><b className="google-g">G</b>Continue with Google</button></section></main>}
+import Link from 'next/link';import {useRouter} from 'next/navigation';import {useState} from 'react';import {supabase} from '@/lib/supabase'
+export default function AuthCard({mode}:{mode:'signin'|'signup'}){const r=useRouter(),[theme,setTheme]=useState<'light'|'dark'>('dark'),[fullName,setFullName]=useState(''),[college,setCollege]=useState('BMSIT&M'),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[error,setError]=useState(''),[loading,setLoading]=useState(false),signup=mode==='signup';const handleGoogleSignIn=async()=>{setError('');const {error}=await supabase.auth.signInWithOAuth({provider:'google',options:{redirectTo:`${window.location.origin}/dashboard`}});if(error){console.error('Google sign-in error:',error);setError(error.message)}};const submit=async(e:React.FormEvent)=>{e.preventDefault();setError('');setLoading(true);try{if(signup){const {data,error:signUpError}=await supabase.auth.signUp({email,password});if(signUpError)throw signUpError;if(!data.user)throw new Error('Please check your email to confirm your account, then sign in.');const {data:collegeRow,error:collegeError}=await supabase.from('colleges').select('id').eq('name',college).maybeSingle();if(collegeError||!collegeRow)throw collegeError||new Error('Selected college could not be found.');const {error:studentError}=await supabase.from('students').insert({auth_user_id:data.user.id,full_name:fullName,college_id:collegeRow.id});if(studentError)throw studentError}else{const {error:signInError}=await supabase.auth.signInWithPassword({email,password});if(signInError)throw signInError}r.push('/dashboard')}catch(err){const message=err instanceof Error?err.message:'Authentication failed. Please try again.';console.error('Authentication error:',err);setError(message)}finally{setLoading(false)}};return <main className={'auth-page '+theme}><button className="auth-back" onClick={()=>r.push('/')}>←</button><div className="auth-brand">✦ VantiqLabs</div><button className="theme-toggle" onClick={()=>setTheme(theme==='dark'?'light':'dark')}>{theme==='dark'?'☀':'☾'}<span>{theme==='dark'?'Light':'Dark'} mode</span></button><section className="auth-card"><div className="auth-kicker">{signup?'START YOUR VANTIQ JOURNEY':'WELCOME BACK'}</div><h1>{signup?'Create your account':'Sign in to VantiqLabs'}</h1><p>{signup?'Already have an account?':'New to VantiqLabs?'} <Link href={signup?'/auth/signin':'/auth/signup'}>{signup?'Sign in':'Create an account'}</Link></p><form onSubmit={submit}>{signup&&<><label>Full name<input value={fullName} onChange={e=>setFullName(e.target.value)} required placeholder="Enter your full name"/></label><label>College<select value={college} onChange={e=>setCollege(e.target.value)}><option>BMSIT&amp;M</option><option>MSRIT</option></select></label></>}<label>College email<input value={email} onChange={e=>setEmail(e.target.value)} required type="email" placeholder="you@college.edu"/></label><label>Password<input value={password} onChange={e=>setPassword(e.target.value)} required minLength={6} type="password" placeholder="Enter your password"/></label>{error&&<p className="notice">{error}</p>}<button className="auth-submit" disabled={loading} type="submit">{loading?'Please wait…':signup?'Create your account →':'Sign in to your account →'}</button></form><div className="auth-divider"><span>OR CONTINUE WITH</span></div><button className="social-auth" onClick={handleGoogleSignIn}><b className="google-g">G</b>Continue with Google</button></section></main>}
 </file>
 
 <file path="components/booking/BookingFlow.tsx">
-'use client'
-// Client component: local multi-step booking flow.
-import {useState} from 'react';import {useRouter} from 'next/navigation';import {type Mentor} from '@/lib/types'
-export default function BookingFlow({mentor}:{mentor:Mentor}){const r=useRouter(),[step,setStep]=useState(1),[date,setDate]=useState('Thu, 24 Jul'),[time,setTime]=useState('6:00 PM');if(step===4)return <main className="booking"><div className="confirmation"><div className="success">✓</div><h1>You’re all set.</h1><p>Your session with {mentor.name} is confirmed for {date} at {time}.</p><button className="btn" onClick={()=>r.push('/dashboard')}>Go to my dashboard →</button></div></main>;return <main className="booking"><button className="back" onClick={()=>r.back()}>← Back</button><div className="progress">{['Choose a time','Review','Payment'].map((x,i)=><div className={step===i+1?'active':''} key={x}><b>{i+1}</b><span>{x}</span></div>)}</div><div className="booking-grid"><section><h1>{step===1?'Choose a time that works.':step===2?'Review your session.':'Secure payment.'}</h1>{step===1&&<><div className="date-row">{['Tue, 22 Jul','Wed, 23 Jul','Thu, 24 Jul','Fri, 25 Jul'].map(x=><button key={x} className={date===x?'selected':''} onClick={()=>setDate(x)}>{x}</button>)}</div><div className="slots">{['10:00 AM','2:00 PM','4:30 PM','6:00 PM'].map(x=><button key={x} className={time===x?'selected':''} onClick={()=>setTime(x)}>{x}</button>)}</div></>}{step===2&&<div className="review"><b>30-minute mentorship session</b><p>{date} · {time}</p></div>}{step===3&&<div className="pay-form"><label>Cardholder name<input placeholder="Your full name"/></label><p className="fine">Prototype checkout — no payment will be processed.</p></div>}<button className="btn next" onClick={()=>setStep(step===3?4:step+1)}>Continue →</button></section></div></main>}
+'use client';import {useState} from 'react';import {useRouter} from 'next/navigation';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default function BookingFlow({mentor}:{mentor:AlumniProfileWithCollege}){const r=useRouter(),[step,setStep]=useState(1),[date,setDate]=useState('Thu, 24 Jul'),[time,setTime]=useState('6:00 PM');if(step===4)return <main className="booking"><div className="confirmation"><div className="success">✓</div><h1>You’re all set.</h1><p>Your session with {mentor.name} is confirmed for {date} at {time}.</p><button className="btn" onClick={()=>r.push('/dashboard')}>Go to my dashboard →</button></div></main>;return <main className="booking"><button className="back" onClick={()=>r.back()}>← Back</button><div className="progress">{['Choose a time','Review','Payment'].map((x,i)=><div className={step===i+1?'active':''} key={x}><b>{i+1}</b><span>{x}</span></div>)}</div><div className="booking-grid"><section><h1>{step===1?'Choose a time that works.':step===2?'Review your session.':'Secure payment.'}</h1>{step===1&&<><div className="date-row">{['Tue, 22 Jul','Wed, 23 Jul','Thu, 24 Jul','Fri, 25 Jul'].map(x=><button key={x} className={date===x?'selected':''} onClick={()=>setDate(x)}>{x}</button>)}</div><div className="slots">{['10:00 AM','2:00 PM','4:30 PM','6:00 PM'].map(x=><button key={x} className={time===x?'selected':''} onClick={()=>setTime(x)}>{x}</button>)}</div></>}{step===2&&<div className="review"><b>30-minute mentorship session with {mentor.name} · ₹{mentor.rate_call_30min}</b><p>{date} · {time}</p></div>}{step===3&&<div className="pay-form"><label>Cardholder name<input placeholder="Your full name"/></label><p className="fine">Prototype checkout — no payment will be processed.</p></div>}<button className="btn next" onClick={()=>setStep(step===3?4:step+1)}>Continue →</button></section></div></main>}
 </file>
 
 <file path="components/browse/BrowseContent.tsx">
-'use client'
-// Client component: search and mentor grid.
-import {useMemo,useState} from 'react';import {mentors} from '@/lib/types';import MentorCard from '@/components/ui/MentorCard'
-export default function BrowseContent({college}:{college:string}){const [query,setQuery]=useState('');const filtered=useMemo(()=>mentors.filter(m=>(college==='All colleges'||m.college===college)&&`${m.name} ${m.role} ${m.company} ${m.expertise.join(' ')}`.toLowerCase().includes(query.toLowerCase())),[college,query]);return <section className="browse-content"><div className="browse-heading"><div><p className="section-kicker">VERIFIED PEOPLE, PRACTICAL ADVICE</p><h1>Explore mentors</h1></div><span>{filtered.length} mentors</span></div><div className="search-wide"><span className="icon">⌕</span><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search by name, role, company, or skill"/><button onClick={()=>setQuery('')}>Clear</button></div><div className="chip-row"><button className="chip active">All expertise</button><button className="chip">Engineering</button><button className="chip">Product</button></div>{filtered.length?<div className="mentor-grid all">{filtered.map(m=><MentorCard key={m.id} mentor={m} href={'/profile/'+m.id}/>)}</div>:<div className="empty"><b>No mentors match that search.</b></div>}</section>}
+'use client';import {useMemo,useState} from 'react';import {type AlumniProfileWithCollege} from '@/lib/types';import MentorCard from '@/components/ui/MentorCard'
+export default function BrowseContent({college,mentors}:{college:string;mentors:AlumniProfileWithCollege[]}){const [query,setQuery]=useState('');const filtered=useMemo(()=>mentors.filter(m=>(college==='All colleges'||m.colleges?.name===college||m.colleges?.slug===college)&&`${m.name} ${m.role} ${m.company} ${(m.expertise||[]).join(' ')}`.toLowerCase().includes(query.toLowerCase())),[college,query,mentors]);return <section className="browse-content"><div className="browse-heading"><div><p className="section-kicker">VERIFIED PEOPLE, PRACTICAL ADVICE</p><h1>Explore mentors</h1></div><span>{filtered.length} mentors</span></div><div className="search-wide"><span className="icon">⌕</span><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search by name, role, company, or skill"/><button onClick={()=>setQuery('')}>Clear</button></div><div className="chip-row"><button className="chip active">All expertise</button><button className="chip">Engineering</button><button className="chip">Product</button></div>{mentors.length===0?<div className="empty"><b>We&apos;re onboarding our first mentors — check back soon.</b></div>:filtered.length?<div className="mentor-grid all">{filtered.map(m=><MentorCard key={m.id} mentor={m} href={'/profile/'+m.id}/>)}</div>:<div className="empty"><b>No mentors match that search.</b></div>}</section>}
 </file>
 
 <file path="components/browse/FilterPanel.tsx">
@@ -232,9 +258,8 @@ export default function FilterPanel({selectedCollege}:{selectedCollege:string}){
 </file>
 
 <file path="components/dashboard/DashMain.tsx">
-'use client'
-// Client component: dashboard recommendations.
-import {useRouter} from 'next/navigation';import {mentors} from '@/lib/types';import MentorCard from '@/components/ui/MentorCard';export default function DashMain(){const r=useRouter();return <section className="dash-main"><p className="section-kicker">THURSDAY, 17 JULY</p><h1>Good morning. <em>Keep going.</em></h1><div className="goal"><div><span>YOUR CAREER GOAL</span><h2>Become a product engineer</h2><p>3 of 5 milestones completed</p></div><b>60%</b></div><div className="dash-head"><h2>Recommended for you</h2><button className="text-btn" onClick={()=>r.push('/browse')}>Explore all →</button></div><div className="mentor-grid">{mentors.slice(0,3).map(m=><MentorCard key={m.id} mentor={m} href={'/profile/'+m.id}/>)}</div></section>}
+'use client';import {useRouter} from 'next/navigation';import MentorCard from '@/components/ui/MentorCard';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default function DashMain({name,mentors,error}:{name:string;mentors:AlumniProfileWithCollege[];error?:string}){const r=useRouter();return <section className="dash-main"><p className="section-kicker">THURSDAY, 17 JULY</p><h1>Good morning, {name}. <em>Keep going.</em></h1><div className="goal"><div><span>YOUR CAREER GOAL</span><h2>Become a product engineer</h2><p>3 of 5 milestones completed</p></div><b>60%</b></div><div className="dash-head"><h2>Recommended for you</h2><button className="text-btn" onClick={()=>r.push('/browse')}>Explore all →</button></div>{error&&<div className="empty"><b>{error}</b></div>}<div className="mentor-grid">{mentors.map(m=><MentorCard key={m.id} mentor={m} href={'/profile/'+m.id}/>)}</div></section>}
 </file>
 
 <file path="components/dashboard/DashSidebar.tsx">
@@ -295,18 +320,17 @@ export {Comparison as default} from './shared'
 
 <file path="components/home/shared.tsx">
 'use client'
-// Client components: migrated landing page sections.
-import {useState} from 'react';import {useRouter} from 'next/navigation';import Avatar from '@/components/ui/Avatar';import ComingSoon from '@/components/ui/ComingSoon';import {comingColleges,liveColleges,mentors} from '@/lib/types'
+import {useState} from 'react';import {useRouter} from 'next/navigation';import ComingSoon from '@/components/ui/ComingSoon';import {comingColleges,liveColleges} from '@/lib/types'
 export function HeroSection(){const r=useRouter();return <section className="editorial-hero"><div className="hero-copy"><div className="pill">MENTOR-LED CAREER ACCELERATION</div><h1>Your college network.<br/>Your career <em>playbook.</em></h1><p>VantiqLabs connects ambitious engineering students with verified alumni who have already built the careers they want.</p><div className="hero-actions"><button className="outline-cta" onClick={()=>r.push('/browse')}>View mentor network</button><button className="dark-cta" onClick={()=>r.push('/browse')}>Start exploring →</button></div></div><div className="product-frame"><div className="browser-bar"><i/><i/><i/><span>vantiqlabs.in</span></div><div className="mini-product"><div className="mini-nav"><b>✦ VantiqLabs</b><span>Mentors</span><span>Roadmaps</span></div><p>Find someone who knows the way.</p><h3>Meet mentors who built<br/>the careers you want.</h3></div></div></section>}
 export function CampusMarquee(){const r=useRouter(),[soon,setSoon]=useState<string|null>(null),names=[...liveColleges,...comingColleges.map(x=>x[0])];return <><section className="campus-marquee"><p>Growing across Bengaluru&apos;s engineering colleges</p><div className="marquee-window"><div className="marquee-track">{[0,1].map(g=><div className="marquee-group" key={g}>{names.map(n=><button key={g+n} onClick={()=>liveColleges.includes(n as never)?r.push('/browse?college='+encodeURIComponent(n)):setSoon(n)} className={liveColleges.includes(n as never)?'campus-logo live':'campus-logo'}><i>{n.slice(0,3)}</i><b>{n}</b><span>{liveColleges.includes(n as never)?'MENTORS LIVE':'COMING SOON'}</span></button>)}</div>)}</div></div></section>{soon&&<ComingSoon name={soon} close={()=>setSoon(null)}/>}</>}
 export function CompanyMarquee(){const c=['Airbus','Google','ABB','Siemens','TCS','Amazon','Microsoft','Walmart','Accenture','IBM','Cisco'];return <section className="company-marquee"><p>Companies our mentors have experience with</p><div className="marquee-window"><div className="marquee-track reverse">{[0,1].map(g=><div className="marquee-group" key={g}>{c.map(n=><div className="company-logo" key={g+n}><i>{n.slice(0,2)}</i><b>{n}</b></div>)}</div>)}</div></div></section>}
 export function Comparison(){return <section className="comparison"><div className="editorial-heading"><span>THE DIFFERENCE</span><h2>How career planning feels<br/>before and after VantiqLabs.</h2><p>Less noise. More evidence. A person who has actually done it.</p></div><img src="/assets/career-clarity-comparison.png" alt="Career clarity comparison"/><div className="compare-grid"><div><small>WITHOUT VANTIQ</small><h3>Scattered advice</h3><p>Conflicting videos and endless guessing.</p></div><div><small>WITH VANTIQ</small><h3>A path built for you</h3><p>Relevant mentors and clear next steps.</p></div></div></section>}
 export function FeatureShowcase(){return <><section className="feature-intro"><span>MEET VANTIQ</span><h2>Everything between ambition<br/>and an offer—made clearer.</h2></section><section className="feature-showcase">{[['01 · DISCOVER','Mentor match engine','Find college-relevant people whose direction matches your goal.'],['02 · LEARN','Career playbooks','Turn a real journey into practical, visible milestones.'],['03 · CONNECT','Focused 1:1 sessions','Book time when context and honest feedback matter.']].map(([n,h,p],i)=><article className="sticky-feature" key={h}><div className="feature-visual"><b>{i+1}</b><h3>{h}</h3></div><div className="feature-copy"><span>{n}</span><h2>{h}</h2><p>{p}</p></div></article>)}</section></>}
-export function MentorEconomy(){return <section className="mentor-economy"><div className="editorial-heading"><span>FOR ALUMNI</span><h2>Turn experience into impact.</h2></div><div className="economy-grid"><div className="benefit-stack">{['Earn on your terms','Build meaningful influence','Stay in control'].map(x=><article key={x}><b>✦</b><h3>{x}</h3><p>Share practical experience with students from your campus.</p></article>)}</div><blockquote>“The best guidance comes from someone only a few years ahead.”<footer><Avatar mentor={mentors[1]} small/><div><b>Nisha Rao</b><span>MSRIT alumna · Product at Microsoft</span></div></footer></blockquote></div></section>}
+export function MentorEconomy(){const benefits=[['Earn on your terms','Set your own rates and availability, then get paid for every call you choose to take.'],['Build meaningful influence','Be the reason a junior from your own college lands the role they have been working toward.'],['Stay in control','Choose the requests that feel right for you, and pause your availability whenever life gets busy.']];return <section className="mentor-economy"><div className="editorial-heading"><span>FOR ALUMNI</span><h2>Turn experience into impact.</h2></div><div className="economy-grid"><div className="benefit-stack">{benefits.map(([title,copy])=><article key={title}><b>✦</b><h3>{title}</h3><p>{copy}</p></article>)}</div><blockquote><div><h3>What students want, is what we deliver</h3><p>We know students do not need another generic AI roadmap or advice from someone whose path feels impossible to relate to. They need honest, realistic guidance from someone who has been in their exact shoes and understands the questions, trade-offs, and uncertainty that come with their situation.</p></div><div className="economy-testimonial">“The best guidance comes from someone only a few years ahead.”</div><footer><div className="avatar small" style={{background:'#0f766e'}}>NR</div><div><b>Nisha Rao</b><span>MSRIT alumna · Product at Microsoft</span></div></footer></blockquote></div></section>}
 export function Outcomes(){return <section className="outcomes"><div className="editorial-heading"><span>WHAT CHANGES</span><h2>Clarity compounds quickly.</h2></div><div className="timeline">{[['Today','Stop guessing'],['30 days','Build the right proof'],['90 days','Move with confidence']].map(([a,b])=><div key={a}><b>{a}</b><article><h3>{b}</h3><p>Take the next move with relevant context.</p></article></div>)}</div></section>}
 export function Scale(){return <section className="scale"><div className="editorial-heading"><span>BUILT TO GROW</span><h2>Small network. Serious depth.</h2></div><div className="scale-grid">{[['2','COLLEGES LIVE'],['6','FOUNDING MENTORS'],['8','CAMPUSES NEXT'],['1:1','HUMAN CONTEXT']].map(([a,b])=><article key={b}><b>{a}</b><span>{b}</span><p>Built around trusted communities.</p></article>)}</div></section>}
-export function Voices(){return <section className="voices"><div className="editorial-heading"><span>EARLY VOICES</span><h2>What students want from career guidance.</h2></div><div className="voice-grid">{['I need someone to tell me what mattered when they were in my place.','Seeing a senior from my college makes the path feel real.','The value is knowing what to ignore and what to do next.'].map((q,i)=><blockquote key={q}><p>“{q}”</p><footer>Student · {i?'MSRIT':'BMSIT&M'}</footer></blockquote>)}</div></section>}
-export function FAQ(){const [open,setOpen]=useState(0),items=[['Who is VantiqLabs for?','Engineering students and alumni who want practical guidance.'],['How are mentors verified?','College and professional experience are reviewed.'],['Which colleges are live?','BMSIT&M and MSRIT are live first.']];return <section className="faq-section"><div className="editorial-heading"><span>QUESTIONS, ANSWERED</span><h2>Frequently asked questions.</h2></div><div className="faq-list">{items.map(([q,a],i)=><article className={open===i?'open':''} key={q}><button onClick={()=>setOpen(open===i?-1:i)}><b>{q}</b><i>↓</i></button><div><p>{a}</p></div></article>)}</div></section>}
+export function Voices(){const reviews=[['I had been rejected from two internships and was quietly assuming I was not good enough. My mentor had faced almost the same pattern a year earlier and showed me what to change in my applications. The next round felt far less random because I finally understood what recruiters were seeing.','Student · BMSIT&M'],['The interview questions my mentor shared were not generic lists from the internet. Two of the themes came up almost exactly in my final interview. More importantly, I knew how to explain my thinking instead of just memorising answers.','Student · MSRIT'],['I came in with a very polished but completely unrealistic prep schedule. My mentor’s honest reflection helped me cut it down to the work that actually mattered. I stopped chasing every YouTube checklist and started finishing things.','Student · BMSIT&M'],['It sounds small, but having someone I could ask “dumb” questions changed everything. They explained things without making me feel behind, because they remembered being in the same college a few years ago. That kind of context is hard to find on LinkedIn.','Student · MSRIT'],['Most career content I found was either too broad or made every journey look perfect. Here, my mentor spoke openly about rejections, delayed offers, and the decisions they would make differently. It felt useful because it was honest.','Student · BMSIT&M'],['I was trying to switch from core engineering to product and did not know which projects would count. My mentor helped me shape one project into a story that made sense to a product interviewer. I left each call with a clear next step.','Student · MSRIT'],['Giving back has been more meaningful than I expected. Students from my own college ask questions I remember having, and I can answer them without pretending there is one perfect path. The conversations are candid and genuinely energising.','Alumnus · BMSIT&M'],['I enjoy that students arrive with context instead of treating every call like a generic coffee chat. It lets us talk about their real work, confidence, and choices. Seeing a student turn that clarity into an offer is incredibly rewarding.','Alumna · MSRIT'],['My mentor looked at my resume for ten minutes and identified the exact gap I had been missing for months. We then planned how to prove that skill through one focused project. It was more valuable than another round of scattered online advice.','Student · BMSIT&M'],['The best part was learning what not to prepare. My mentor explained which topics mattered for the roles I wanted and which ones were just creating anxiety. I finally had permission to focus.','Student · MSRIT'],['I expected a formal session, but it felt like a senior being straightforward with me. We talked through my weak interview answer, practised it, and made it sound like my own voice. That made the next interview much less intimidating.','Student · BMSIT&M'],['Mentoring through VantiqLabs is structured enough to respect my time but personal enough to matter. I can choose requests that match my experience and see the impact quickly. It is a thoughtful way to stay connected to campus.','Alumna · MSRIT']];return <section className="voices"><div className="editorial-heading"><span>STUDENT VOICES</span><h2>We operate on trust and loyalty, here are our user reviews.</h2></div><div className="marquee-window voice-marquee"><div className="marquee-track">{[0,1].map(g=><div className="marquee-group" key={g}>{reviews.map(([quote,by],i)=><blockquote key={`${g}-${i}`}><p>“{quote}”</p><footer>{by}</footer></blockquote>)}</div>)}</div></div></section>}
+export function FAQ(){const [open,setOpen]=useState(0),items=[['Who is VantiqLabs for?','Engineering students and alumni who want practical guidance.'],['How are mentors verified?','College and professional experience are reviewed.'],['Which colleges are live?','BMSIT&M and MSRIT are live first.'],['How do pricing and unlocks work?','Mentors set transparent prices for calls and deeper roadmap unlocks. You will always see the cost before choosing to book or unlock anything.'],['How are mentor calls booked and scheduled?','Choose a mentor, select an available time, and confirm the session through the booking flow. You will receive the relevant session details once your booking is confirmed.'],['Are payments refundable?','Refund eligibility depends on the booking status and the situation. If a mentor cannot attend or there is a platform issue, our support team will help resolve it fairly.'],['How do alumni get paid?','Alumni choose their rates and availability, then receive payment for completed sessions through the platform’s payment process.'],['What if there is no mentor for my target company yet?','Tell us what you are aiming for and keep exploring adjacent roles. We are continually onboarding alumni, and the network will expand with the needs students share.'],['How can I become a verified mentor?','Apply with your college and professional background. We review the details to make sure students can rely on the experience and guidance being offered.']];return <section className="faq-section"><div className="editorial-heading"><span>QUESTIONS, ANSWERED</span><h2>Frequently asked questions.</h2></div><div className="faq-list">{items.map(([q,a],i)=><article className={open===i?'open':''} key={q}><button onClick={()=>setOpen(open===i?-1:i)}><b>{q}</b><i>↓</i></button><div><p>{a}</p></div></article>)}</div></section>}
 export function MentorOrbit(){const r=useRouter(),p=['mentor-airbus.png','mentor-google.png','mentor-product.png','mentor-data.png','mentor-electrical.png','mentor-design.png','mentor-security.png','mentor-manager.png'];return <section className="mentor-orbit"><div className="orbit-stage"><div className="orbit-arc"/>{p.map((x,i)=><img key={x} src={'/assets/'+x} alt="VantiqLabs mentor" style={{animationDelay:`-${i*4}s`}}/>)}</div><div className="orbit-center"><span>PEOPLE, NOT NOISE</span><h2>Career clarity is<br/>closer than it feels.</h2><p>Meet alumni who understand your starting point.</p><button className="dark-cta" onClick={()=>r.push('/browse')}>Meet your mentors →</button></div></section>}
 </file>
 
@@ -328,10 +352,8 @@ export default function Topbar(){const [open,setOpen]=useState(false),path=usePa
 </file>
 
 <file path="components/profile/BookCard.tsx">
-'use client'
-// Client component: profile booking CTA.
-import Link from 'next/link';import {useState} from 'react';import {type Mentor} from '@/lib/types'
-export default function BookCard({mentor}:{mentor:Mentor}){const [saved,setSaved]=useState(false);return <aside className="book-card"><span>1:1 MENTOR SESSION</span><h3>Get practical advice from {mentor.name.split(' ')[0]}.</h3><p>30 minutes · Video call</p><div className="price">₹{mentor.rate}<small> / session</small></div><Link className="btn full" href={'/booking/'+mentor.id}>Book a session →</Link><button className="secondary full" onClick={()=>setSaved(!saved)}>{saved?'♥ Saved to your list':'♡ Save mentor'}</button></aside>}
+'use client';import Link from 'next/link';import {useState} from 'react';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default function BookCard({mentor}:{mentor:AlumniProfileWithCollege}){const [saved,setSaved]=useState(false);return <aside className="book-card"><span>1:1 MENTOR SESSION</span><h3>Get practical advice from {mentor.name?.split(' ')[0]}.</h3><p>30 minutes · Video call</p><div className="price">₹{mentor.rate_call_30min}<small> / session</small></div><Link className="btn full" href={'/booking/'+mentor.id}>Book a session →</Link><button className="secondary full" onClick={()=>setSaved(!saved)}>{saved?'♥ Saved to your list':'♡ Save mentor'}</button></aside>}
 </file>
 
 <file path="components/profile/LockedContent.tsx">
@@ -340,23 +362,18 @@ export default function LockedContent({tab}:{tab:string}){return <div className=
 </file>
 
 <file path="components/profile/ProfileHero.tsx">
-// Server component: profile masthead.
-import Avatar from '@/components/ui/Avatar';import {type Mentor} from '@/lib/types'
-export default function ProfileHero({mentor}:{mentor:Mentor}){return <section className="profile-hero"><div className="profile-copy"><div className="verified">✓ VERIFIED VANTIQ MENTOR</div><h1>{mentor.name}</h1><p>{mentor.role} at <b>{mentor.company}</b> · {mentor.college}</p><div className="profile-metrics"><span>★ {mentor.rating} rating</span><span>{mentor.years} experience</span><span>42 sessions</span></div></div><Avatar mentor={mentor}/></section>}
+import Avatar from '@/components/ui/Avatar';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default function ProfileHero({mentor}:{mentor:AlumniProfileWithCollege}){return <section className="profile-hero"><div className="profile-copy"><div className="verified">✓ VERIFIED VANTIQ MENTOR</div><h1>{mentor.name}</h1><p>{mentor.role} at <b>{mentor.company}</b> · {mentor.colleges?.name}</p><div className="profile-metrics"><span>★ {mentor.rating} rating</span><span>{mentor.years_experience} experience</span><span>42 sessions</span></div></div><Avatar mentor={mentor}/></section>}
 </file>
 
 <file path="components/profile/ProfileTabs.tsx">
-'use client'
-// Client component: profile tab state.
-import {useState} from 'react';import {type Mentor} from '@/lib/types';import LockedContent from './LockedContent'
-export default function ProfileTabs({mentor}:{mentor:Mentor}){const [tab,setTab]=useState('Overview');return <section><div className="tabs">{['Overview','Career roadmap','Interview prep','Resources'].map(x=><button key={x} onClick={()=>setTab(x)} className={tab===x?'active':''}>{x}</button>)}</div>{tab==='Overview'?<><h2>Make your next move with clarity.</h2><p className="profile-text">{mentor.name.split(' ')[0]} helps students turn uncertainty into a focused career plan.</p><div className="info-grid"><div><span>EXPERTISE</span><p>{mentor.expertise.join(' · ')}</p></div><div><span>ALUMNI NETWORK</span><p>{mentor.college}</p></div></div></>:<LockedContent tab={tab}/>}</section>}
+'use client';import {useState} from 'react';import {type AlumniProfileWithCollege} from '@/lib/types';import LockedContent from './LockedContent'
+export default function ProfileTabs({mentor}:{mentor:AlumniProfileWithCollege}){const [tab,setTab]=useState('Overview');return <section><div className="tabs">{['Overview','Career roadmap','Interview prep','Resources'].map(x=><button key={x} onClick={()=>setTab(x)} className={tab===x?'active':''}>{x}</button>)}</div>{tab==='Overview'?<><h2>Make your next move with clarity.</h2><p className="profile-text">{mentor.free_summary_text||`${mentor.name||'This mentor'} helps students turn uncertainty into a focused career plan.`}</p><div className="info-grid"><div><span>EXPERTISE</span><p>{(mentor.expertise||[]).join(' · ')}</p></div><div><span>ALUMNI NETWORK</span><p>{mentor.colleges?.name}</p></div></div></>:<LockedContent tab={tab}/>}</section>}
 </file>
 
 <file path="components/ui/Avatar.tsx">
-'use client'
-// Client component: mentor avatar.
-import {type Mentor} from '@/lib/types'
-export default function Avatar({mentor,small=false}:{mentor:Mentor;small?:boolean}){return <div className={'avatar '+(small?'small':'')} style={{background:mentor.color}}>{mentor.initials}</div>}
+import { type AlumniProfileWithCollege } from '@/lib/types'
+export default function Avatar({mentor,small=false}:{mentor:AlumniProfileWithCollege;small?:boolean}){return <div className={'avatar '+(small?'small':'')} style={{background:'#4338ca'}}>{mentor.photo_url?<img src={mentor.photo_url} alt={mentor.name||'Mentor'}/>:mentor.initials}</div>}
 </file>
 
 <file path="components/ui/ComingSoon.tsx">
@@ -367,25 +384,30 @@ export default function ComingSoon({name,close}:{name:string;close:()=>void}){co
 </file>
 
 <file path="components/ui/MentorCard.tsx">
-'use client'
-// Client component: mentor card with optional saved state.
-import Link from 'next/link';import Avatar from './Avatar';import {type Mentor} from '@/lib/types'
-export default function MentorCard({mentor,href,save,toggle}:{mentor:Mentor;href:string;save?:boolean;toggle?:()=>void}){return <article className="mentor-card"><div className="card-top"><Avatar mentor={mentor}/>{toggle&&<button className={'save '+(save?'on':'')} onClick={toggle}>♥</button>}</div><Link className="card-body" href={href}><div className="verified">✓ VERIFIED MENTOR</div><h3>{mentor.name}</h3><p>{mentor.role} · <b>{mentor.company}</b></p><span className="college-pill">{mentor.college}</span><div className="tags">{mentor.expertise.map(x=><span key={x}>{x}</span>)}</div><div className="card-bottom"><span>★ {mentor.rating} · {mentor.years}</span><b>View profile →</b></div></Link></article>}
+import Link from 'next/link';import Avatar from './Avatar';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default function MentorCard({mentor,href,save,toggle}:{mentor:AlumniProfileWithCollege;href:string;save?:boolean;toggle?:()=>void}){return <article className="mentor-card"><div className="card-top"><Avatar mentor={mentor}/>{toggle&&<button className={'save '+(save?'on':'')} onClick={toggle}>♥</button>}</div><Link className="card-body" href={href}><div className="verified">✓ VERIFIED MENTOR</div><h3>{mentor.name}</h3><p>{mentor.role} · <b>{mentor.company}</b></p><span className="college-pill">{mentor.colleges?.name}</span><div className="tags">{(mentor.expertise||[]).map(x=><span key={x}>{x}</span>)}</div><div className="card-bottom"><span>★ {mentor.rating} · {mentor.years_experience}</span><b>View profile →</b></div></Link></article>}
 </file>
 
 <file path="lib/supabase.ts">
 import { createClient } from '@supabase/supabase-js'
-const supabaseUrl=process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey=process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const configuredSupabaseUrl=process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseUrl=configuredSupabaseUrl?.startsWith('http')?configuredSupabaseUrl:'https://placeholder.supabase.co'
+const supabaseAnonKey=process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY||'placeholder-anon-key'
 export const supabase=createClient(supabaseUrl,supabaseAnonKey)
+export function createServerSupabaseClient(){return createClient(supabaseUrl,process.env.SUPABASE_SERVICE_ROLE_KEY||'placeholder-service-role-key')}
 </file>
 
 <file path="lib/types.ts">
-// Server-safe shared mock types and data.
-export type Mentor={id:number;name:string;initials:string;role:string;company:string;college:'BMSIT&M'|'MSRIT';years:string;expertise:string[];rate:number;color:string;rating:string}
-export const liveColleges=['BMSIT&M','MSRIT'] as const
-export const comingColleges=[['BIT','Bangalore Institute of Technology'],['DSCE','Dayananda Sagar College of Engineering'],['NMIT','Nitte Meenakshi Institute of Technology'],['Sir. MVIT','Sir M. Visvesvaraya Institute of Technology'],['Presidency University','Presidency University, Bengaluru'],['JSS','JSS Science and Technology University'],['RVCE','Rashtreeya Vidyalaya College of Engineering'],['CMRIT','CMR Institute of Technology']]
-export const mentors:Mentor[]=[{id:1,name:'Aarav Mehta',initials:'AM',role:'Senior Software Engineer',company:'Google',college:'BMSIT&M',years:'7 years',expertise:['Product engineering','System design'],rate:999,color:'#4338ca',rating:'4.9'},{id:2,name:'Nisha Rao',initials:'NR',role:'Product Manager',company:'Microsoft',college:'MSRIT',years:'6 years',expertise:['Product strategy','Career switch'],rate:899,color:'#0f766e',rating:'4.9'},{id:3,name:'Karthik Iyer',initials:'KI',role:'SDE II',company:'Amazon',college:'BMSIT&M',years:'5 years',expertise:['Interview prep','DSA'],rate:799,color:'#c2410c',rating:'4.8'},{id:4,name:'Ananya Sharma',initials:'AS',role:'Data Scientist',company:'Atlassian',college:'MSRIT',years:'5 years',expertise:['Data science','Portfolios'],rate:899,color:'#7e22ce',rating:'5.0'},{id:5,name:'Rohan Desai',initials:'RD',role:'UX Designer',company:'Razorpay',college:'BMSIT&M',years:'4 years',expertise:['Design careers','Portfolio review'],rate:699,color:'#be123c',rating:'4.8'},{id:6,name:'Meera Nair',initials:'MN',role:'Engineering Manager',company:'Flipkart',college:'MSRIT',years:'9 years',expertise:['Leadership','Backend'],rate:1199,color:'#0369a1',rating:'4.9'}]
+// Legacy UI shape retained for any external/leftover imports; data now comes from AlumniProfile.
+export type Mentor = { id:number; name:string; initials:string; role:string; company:string; college:'BMSIT&M'|'MSRIT'; years:string; expertise:string[]; rate:number; color:string; rating:string }
+
+export type AlumniProfile = {
+  id: string; college_id: string | null; name: string | null; initials: string | null; photo_url: string | null; company: string | null; role: string | null; years_experience: string | null; expertise: string[] | null; rate_call_10min: number | null; rate_call_30min: number | null; rate_full_unlock: number | null; linkedin_url: string | null; prep_timeline_text: string | null; resources_used_text: string | null; interview_questions_text: string | null; applications_count: number | null; rejections_count: number | null; reflection_text: string | null; free_summary_text: string | null; full_roadmap_text: string | null; rating: number | null; is_verified: boolean | null; is_published: boolean | null; created_at: string | null
+}
+
+export type AlumniProfileWithCollege = AlumniProfile & { colleges: { name: string | null; slug: string | null } | null }
+export const liveColleges = ['BMSIT&M', 'MSRIT'] as const
+export const comingColleges = [['BIT', 'Bangalore Institute of Technology'], ['DSCE', 'Dayananda Sagar College of Engineering'], ['NMIT', 'Nitte Meenakshi Institute of Technology'], ['Sir. MVIT', 'Sir M. Visvesvaraya Institute of Technology'], ['Presidency University', 'Presidency University, Bengaluru'], ['JSS', 'JSS Science and Technology University'], ['RVCE', 'Rashtreeya Vidyalaya College of Engineering'], ['CMRIT', 'CMR Institute of Technology']]
 </file>
 
 <file path="styles/globals.css">
@@ -410,6 +432,10 @@ export const mentors:Mentor[]=[{id:1,name:'Aarav Mehta',initials:'AM',role:'Seni
 @media(max-width:900px){.sticky-feature{position:sticky;top:74px;height:calc(100svh - 86px);min-height:600px;margin-bottom:34vh;display:grid;grid-template-columns:1fr;grid-template-rows:48% 52%;gap:16px;padding:18px;overflow:hidden}.sticky-feature .feature-visual{min-height:0;height:100%;padding:24px}.sticky-feature .feature-copy{padding:0 8px 12px;overflow:hidden}.sticky-feature .feature-copy h2{font-size:1.8rem;margin-bottom:10px}.sticky-feature .feature-copy>p{font-size:.75rem;line-height:1.55}.sticky-feature .feature-copy ul{margin-top:12px;gap:5px;font-size:.65rem}.sticky-feature:nth-child(3){margin-bottom:8vh}.mentor-orbit{height:650px}.orbit-stage{transform:translateX(-50%) scale(.78);transform-origin:top center;top:30px}}
 @media(max-width:620px){.sticky-feature{top:68px;height:calc(100svh - 76px);min-height:540px;margin-bottom:38vh;grid-template-rows:43% 57%;padding:12px;gap:10px}.sticky-feature .feature-visual{padding:18px;border-radius:14px}.sticky-feature .feature-copy h2{font-size:1.45rem}.sticky-feature .feature-copy>p{font-size:.67rem}.sticky-feature .feature-copy ul{font-size:.59rem}.sticky-feature .match-score{top:12px;right:12px}.mentor-orbit{height:590px}.orbit-stage{transform:translateX(-50%) scale(.58);top:22px}.orbit-center{margin-top:52px}.auth-back{left:14px;top:18px;width:38px;height:38px}.auth-brand{left:50%;transform:translateX(-50%);top:25px}.theme-toggle{top:18px}}
 
+/* Editorial polish: reviews, alumni copy, CTA boundary, and paper-light auth. */
+.economy-grid blockquote h3{font-size:1rem;line-height:1.3;margin:0 0 12px}.economy-grid blockquote>div>p{font-size:.74rem;line-height:1.65;color:#615c54;margin:0}.economy-testimonial{font-size:1rem;line-height:1.55;margin-top:20px;color:#171717}.voice-marquee{max-width:1440px;margin:auto}.voice-marquee .marquee-track{animation-duration:36s}.voice-marquee .marquee-group{gap:18px}.voice-marquee blockquote{width:330px;min-height:290px;margin:0;background:#f0ebe3;padding:25px;display:flex;flex-direction:column}.voice-marquee p{font-size:.77rem;line-height:1.75;color:#514d47}.voice-marquee footer{display:block;background:none;color:#171717;font-size:.62rem;font-weight:800;border-top:1px dashed #a9a29a;margin-top:auto;padding:14px 0 0}.final-cta{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;isolation:isolate}.final-cta h2{margin:0}.final-cta .dark-cta{display:inline-flex;align-items:center;justify-content:center;position:relative;margin-top:30px;line-height:1.2}footer{position:relative;z-index:1}.auth-page.light{--auth-bg:#f8f5ef;--auth-card:#f8f5ef;background:#f8f5ef}.outcomes .editorial-heading>span{color:#a9a5ff}.outcomes .timeline>div>b{color:#171717}.outcomes .timeline article h3{color:#fff}.outcomes .timeline article p{color:#aaa59d}
+@media(max-width:620px){.voice-marquee blockquote{width:280px;min-height:275px}}
+
 /* How it works: interactive four-part journey */
 .topbar:has(+.how-page){background:#f8f5efee;border-top:2px solid #171717;border-bottom:1px solid #ded7ce}.topbar:has(+.how-page) .brand,.topbar:has(+.how-page) .brand b{color:#171717}.topbar:has(+.how-page) .btn{background:#171717;box-shadow:none}.how-page{--how-paper:#f8f5ef;--how-panel:#eee8df;--how-ink:#171717;--how-accent:#5d55db;background:var(--how-paper);color:var(--how-ink)}.how-hero{min-height:500px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:90px 24px 105px;border-bottom:1px solid #ded7ce}.how-hero>span,.how-close>span{font-size:.62rem;letter-spacing:.16em;font-weight:800;color:var(--how-accent);margin-bottom:20px}.how-hero h1{font-size:clamp(3rem,5.6vw,5.7rem);max-width:1050px}.how-hero p{max-width:700px;margin-top:25px;font-size:.9rem;line-height:1.8;color:#625d56}.journey-stage{background:var(--how-panel);padding:95px 24px 80px;overflow:hidden}.journey-orbit{width:min(1180px,100%);height:760px;margin:auto;position:relative;display:grid;place-items:center}.journey-disc{width:440px;height:440px;border-radius:50%;position:relative;z-index:2}.journey-disc:before{content:'';position:absolute;inset:0;border-radius:50%;background:#f8f5ef;border:1.5px solid #171717;box-shadow:0 28px 70px #30281f12;transition:opacity .7s ease,transform 1.2s cubic-bezier(.22,1,.36,1)}.journey-piece{position:absolute;width:50%;height:50%;background:#f8f5ef;border:1px solid #171717;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;opacity:0;transform:scale(.28);transition:opacity .5s ease,transform 1.15s cubic-bezier(.22,1,.36,1),background .7s ease;z-index:1}.journey-piece span{font-size:.55rem;letter-spacing:.14em;font-weight:800;color:#5d55db}.journey-piece b{font-size:1.35rem;letter-spacing:-.04em;margin:7px 0 3px}.journey-piece small{font-size:.59rem;color:#6e675f;max-width:120px}.piece-1{left:0;top:0;border-radius:100% 0 0 0;transform-origin:100% 100%}.piece-2{right:0;top:0;border-radius:0 100% 0 0;transform-origin:0 100%;background:#f2ece3}.piece-3{right:0;bottom:0;border-radius:0 0 100% 0;transform-origin:0 0}.piece-4{left:0;bottom:0;border-radius:0 0 0 100%;transform-origin:100% 0;background:#f2ece3}.journey-trigger{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:112px;height:112px;border-radius:50%;background:#171717;color:#fff;display:grid;place-items:center;align-content:center;gap:4px;z-index:4;box-shadow:0 15px 35px #1717172b;transition:transform .35s ease,background .35s ease}.journey-trigger:hover{transform:translate(-50%,-50%) scale(1.05)}.journey-trigger span{font-size:.7rem;font-weight:800}.journey-trigger i{font-style:normal;color:#aaa4ff}.journey-stage.is-open .journey-disc:before{opacity:0;transform:scale(.55)}.journey-stage.is-open .journey-piece{opacity:1}.journey-stage.is-open .piece-1{transform:translate(-10px,-10px) scale(1)}.journey-stage.is-open .piece-2{transform:translate(10px,-10px) scale(1);transition-delay:.12s}.journey-stage.is-open .piece-3{transform:translate(10px,10px) scale(1);transition-delay:.24s}.journey-stage.is-open .piece-4{transform:translate(-10px,10px) scale(1);transition-delay:.36s}.journey-stage.is-open .journey-trigger{background:#5d55db}.journey-callout{position:absolute;width:290px;min-height:145px;background:#f8f5ef;border:1px solid #171717;padding:20px;display:flex;gap:14px;opacity:0;pointer-events:none;transition:opacity .55s ease,transform .9s cubic-bezier(.22,1,.36,1);z-index:1;box-shadow:8px 8px 0 #d8d0c5}.journey-callout>span{width:30px;height:30px;flex:none;display:grid;place-items:center;border-radius:50%;background:#171717;color:#fff;font-size:.55rem;font-weight:800}.journey-callout b{font-size:.9rem}.journey-callout p{font-size:.67rem;line-height:1.65;color:#625d56;margin-top:6px}.callout-1{left:0;top:42px;transform:translate(75px,70px)}.callout-2{right:0;top:42px;transform:translate(-75px,70px)}.callout-3{right:0;bottom:42px;transform:translate(-75px,-70px)}.callout-4{left:0;bottom:42px;transform:translate(75px,-70px)}.journey-stage.is-open .journey-callout{opacity:1;pointer-events:auto;transform:translate(0,0)}.journey-stage.is-open .callout-1{transition-delay:.5s}.journey-stage.is-open .callout-2{transition-delay:.65s}.journey-stage.is-open .callout-3{transition-delay:.8s}.journey-stage.is-open .callout-4{transition-delay:.95s}.journey-hint{text-align:center;color:#6f685f;font-size:.67rem;letter-spacing:.03em;margin-top:5px}.how-close{min-height:520px;background:#f8f5ef;text-align:center;padding:120px 24px;display:flex;flex-direction:column;align-items:center}.how-close h2{font-size:clamp(2.4rem,4.7vw,4.7rem)}.how-close p{font-size:.85rem;color:#655f57;margin:22px 0 28px}.how-close .dark-cta{padding:16px 23px}
 @media(max-width:1000px){.journey-orbit{height:720px}.journey-disc{width:380px;height:380px}.journey-callout{width:245px}.journey-piece b{font-size:1.15rem}.callout-1,.callout-4{left:-10px}.callout-2,.callout-3{right:-10px}}
@@ -426,6 +452,17 @@ RESEND_API_KEY=your_resend_api_key
 NEXT_PUBLIC_RAZORPAY_KEY_ID=your_razorpay_key_id
 </file>
 
+<file path=".gitignore">
+node_modules/
+dist/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.env.local
+.env*.local
+.next/
+</file>
+
 <file path="next-env.d.ts">
 /// <reference types="next" />
 /// <reference types="next/image-types/global" />
@@ -438,44 +475,6 @@ NEXT_PUBLIC_RAZORPAY_KEY_ID=your_razorpay_key_id
 /** @type {import('next').NextConfig} */
 const nextConfig = { images: { domains: ['localhost'] } }
 export default nextConfig
-</file>
-
-<file path="src/data.ts">
-export type Mentor = { id:number; name:string; initials:string; role:string; company:string; college:'BMSIT&M'|'MSRIT'; years:string; expertise:string[]; rate:number; color:string; rating:string }
-export const liveColleges = ['BMSIT&M', 'MSRIT'] as const
-export const comingColleges = [
-  ['BIT', 'Bangalore Institute of Technology'], ['DSCE', 'Dayananda Sagar College of Engineering'], ['NMIT', 'Nitte Meenakshi Institute of Technology'], ['Sir. MVIT', 'Sir M. Visvesvaraya Institute of Technology'], ['Presidency University', 'Presidency University, Bengaluru'], ['JSS', 'JSS Science and Technology University'], ['RVCE', 'Rashtreeya Vidyalaya College of Engineering'], ['CMRIT', 'CMR Institute of Technology']
-]
-export const mentors: Mentor[] = [
-  {id:1,name:'Aarav Mehta',initials:'AM',role:'Senior Software Engineer',company:'Google',college:'BMSIT&M',years:'7 years',expertise:['Product engineering','System design'],rate:999,color:'#4338ca',rating:'4.9'},
-  {id:2,name:'Nisha Rao',initials:'NR',role:'Product Manager',company:'Microsoft',college:'MSRIT',years:'6 years',expertise:['Product strategy','Career switch'],rate:899,color:'#0f766e',rating:'4.9'},
-  {id:3,name:'Karthik Iyer',initials:'KI',role:'SDE II',company:'Amazon',college:'BMSIT&M',years:'5 years',expertise:['Interview prep','DSA'],rate:799,color:'#c2410c',rating:'4.8'},
-  {id:4,name:'Ananya Sharma',initials:'AS',role:'Data Scientist',company:'Atlassian',college:'MSRIT',years:'5 years',expertise:['Data science','Portfolios'],rate:899,color:'#7e22ce',rating:'5.0'},
-  {id:5,name:'Rohan Desai',initials:'RD',role:'UX Designer',company:'Razorpay',college:'BMSIT&M',years:'4 years',expertise:['Design careers','Portfolio review'],rate:699,color:'#be123c',rating:'4.8'},
-  {id:6,name:'Meera Nair',initials:'MN',role:'Engineering Manager',company:'Flipkart',college:'MSRIT',years:'9 years',expertise:['Leadership','Backend'],rate:1199,color:'#0369a1',rating:'4.9'}
-]
-</file>
-
-<file path=".gitignore">
-node_modules/
-dist/
-*.tsbuildinfo
-vite.config.js
-vite.config.d.ts
-</file>
-
-<file path="index.html">
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f8f5ef" />
-    <meta name="description" content="VantiqLabs connects engineering students with verified alumni mentors, practical career roadmaps, and focused 1:1 guidance." />
-    <title>VantiqLabs — Career clarity from people who've done it</title>
-  </head>
-  <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
-</html>
 </file>
 
 <file path="package.json">
@@ -491,10 +490,6 @@ vite.config.d.ts
 
 <file path="tsconfig.json">
 {"compilerOptions":{"lib":["dom","dom.iterable","esnext"],"allowJs":true,"skipLibCheck":true,"strict":true,"noEmit":true,"esModuleInterop":true,"module":"esnext","moduleResolution":"bundler","resolveJsonModule":true,"isolatedModules":true,"jsx":"preserve","incremental":true,"plugins":[{"name":"next"}],"paths":{"@/*":["./*"]}},"include":["next-env.d.ts","**/*.ts","**/*.tsx",".next/types/**/*.ts"],"exclude":["node_modules"]}
-</file>
-
-<file path="tsconfig.node.json">
-{ "compilerOptions": { "composite": true, "module": "ESNext", "moduleResolution": "Bundler", "allowSyntheticDefaultImports": true }, "include": ["vite.config.ts"] }
 </file>
 
 </files>

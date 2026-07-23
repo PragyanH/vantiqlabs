@@ -1,4 +1,2 @@
-'use client'
-// Client component: booking route.
-import {mentors} from '@/lib/types';import BookingFlow from '@/components/booking/BookingFlow'
-export default function BookingPage({params}:{params:{id:string}}){const mentor=mentors.find(x=>x.id===Number(params.id));return mentor?<BookingFlow mentor={mentor}/>:<main className="booking"><h1>Mentor not found</h1></main>}
+import BookingFlow from '@/components/booking/BookingFlow';import {createServerSupabaseClient} from '@/lib/supabase';import {type AlumniProfileWithCollege} from '@/lib/types'
+export default async function BookingPage({params}:{params:{id:string}}){const {data,error}=await createServerSupabaseClient().from('alumni_profiles').select('*, colleges(name, slug)').eq('id',params.id).eq('is_published',true).maybeSingle();if(error)console.error('Unable to load booking mentor:',error.message);return data?<BookingFlow mentor={data as AlumniProfileWithCollege}/>:<main className="booking"><h1>{error?'We couldn’t load this mentor. Please try again.':'Mentor not found'}</h1></main>}
